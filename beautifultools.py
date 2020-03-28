@@ -9,6 +9,7 @@ import numpy as np
 import plotly.express as px
 import pandas as pd
 import nltk.stem as stem
+from sklearn.preprocessing import normalize
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from bs4 import BeautifulSoup
 from nltk.corpus import stopwords
@@ -17,13 +18,12 @@ from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.utils.multiclass import unique_labels
 from sklearn.metrics import euclidean_distances
 from sklearn.linear_model import LinearRegression
+from sklearn.feature_extraction.text import CountVectorizer
 from scipy import sparse
 
 
 def webpage_text_tokenizer(url, body=True, blackL=[""], verbose=False, sep=" ", **kwargs):
-    """Request and parse the HTML of a given url. Returns a list of words.
-    
-    
+    """Request and parse the HTML of a given url. Returns a list of words.    
     Parameters
     ----------
     url : a string pointing to the webpage
@@ -256,6 +256,7 @@ def stem_words(string, sep=" "):
 class MarginalScreening(BaseEstimator):
     """ The estimator implements marginal screening as posed by Kelly et al. 2019 article 'Predicting Returns with Text Data'. The procedure consist of fitting a linear regression for each element of a document word matrix.
     The parameters are controls on the coefficients, upper and lower bound (alpha_plus, alpha_minus) and moreover on the frequency of the words.   
+
     Parameters
     ----------
     alpha_plus : float, default= 0.5
@@ -327,32 +328,110 @@ class MarginalScreening(BaseEstimator):
 
 
 class TopicModelling(BaseEstimator):
-    """ The estimator implements marginal screening as posed by Kelly et al. 2019 article 'Predicting Returns with Text Data'. The procedure consist of fitting a linear regression for each element of a document word matrix.
-    The parameters are controls on the coefficients, upper and lower bound (alpha_plus, alpha_minus) and moreover on the frequency of the words.   
+    """ The estimator implements topic modelling as posed by Kelly et al. 2019 article 'Predicting Returns with Text Data'.
+    There are no parameters.   
     Parameters
     ----------
+    K : pandas series 
+            A series containing the keywords.
+    S : pandas series
+            A series containing sentiment charged words.
+    y : array-like, shape (n_samples,) or (n_samples, n_outputs)
+            The target values (class labels in classification, real numbers in
+            regression).
+    Returns
+    -------
+    self : object
+           Returns self.
     """
-    def __init__(self, rank=True):
-        self.rank = rank
+    def __init__(self, demo_param='demo'):
+        self.demo_param = demo_param
 
-    def fit(self, X, y):
-        """Implementation of a fitting function.
-        Parameters
-        ----------
-        X : document word matrix of sentiment charged words 
-        y : orders 
-        Returns
-        -------
-        self : object
-            Returns self.
+    def fit(self, K, S, y):
         """
-        X, y = check_X_y(X, y, accept_sparse=True, y_numeric=True)
+
+        """
+        # Define p-hat as the normalized rank
+        y = y.rank(pct=True)
+
+        # Initialize weight matrix 
+        W = np.matrix([y, 1-y]).T
+
+        # Create a column with only sentiment charged keywords
+        K = K.apply(drop_non_sentiment_words, sentiment_words=S.to_list())
+
+        # Remove entries without sentiment charged words
+        K = K[K != ""]
+
+        # Compute count of sentiment charged words for each webpage
+        s = K.apply(lambda row: len(row.split(" ")))
+
+        # Create document keyword matrix
+        cvStep2 = CountVectorizer()
+        dS = cvStep2.fit_transform(K)
+
+        # Get sentiment word frequency per document         
+        tildeD = dS/s[:,None]
+
+        # Fit the linear regression to estimate O matrix
+        O = LinearRegression(fit_intercept=True).fit(X = W, y = tildeD).coef_
+
+        # Set negative coefficients to 0
+        O[O <= 0] = 0
+
+        # Normalize result to l1
+        normalize(O, norm='l1', axis=0, copy=False, return_norm=False)
         
-        s = np.sum(X, axis = 1)
-        
-        tildeD = X/s[:,None]
-        
-        self.coef_ = tildeD
+        self.coef_ = O
         
         return self
+
+class WebpageScorer(BaseEstimator):
+    """ The estimator implements scoring as posed by Kelly et al. 2019 article 'Predicting Returns with Text Data'.  
+    Parameters
+    ----------
+    K : pandas series 
+            A series containing the keywords.
+    S : pandas series
+            A series containing sentiment charged words.
+    O : array-like
+            Matrix containing word positiveness or negativeness.
+    Returns
+    -------
+    self : object
+           Returns self.
+    """
+    def __init__(self, l=0.5):
+        self.l = l
+
+    def predict(self, K, S, O):
+        """
+
+        """
+        
+        # Create a column with only sentiment charged keywords
+        K = K.apply(drop_non_sentiment_words, sentiment_words=S.to_list())
+
+        # Remove entries without sentiment charged words
+        K = K[K != ""]
+
+        # Compute count of sentiment charged words for the webpage
+        s = K.apply(lambda row: len(row.split(" ")))
+
+        # Create document keyword matrix
+        cvStep3 = CountVectorizer(vocabulary=S)
+        dS = cvStep3.fit_transform(K)
+
+        # Get sentiment word frequency per document         
+        D = dS/s[:,None]
+
+        
+        # Evaluate the log-likelihood
+        p = 0.5
+        #v = (dS[None,:]*np.log(p*O[:,0] + (1-p)*O[:,1])) + self.l*np.log(p*(1-p))
+        # Problem dS has to be converted into a simple array to do the piecewise operation
+        
+        self.p = dS
+        
+        return self.p
 
