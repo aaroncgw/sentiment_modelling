@@ -2,7 +2,7 @@
 
 Author: Marco Repetto
 """
-import statistics, re, string
+import statistics, re, string, sys, os
 
 import nltk, requests 
 import numpy as np
@@ -19,8 +19,19 @@ from sklearn.utils.multiclass import unique_labels
 from sklearn.metrics import euclidean_distances
 from sklearn.linear_model import LinearRegression
 from sklearn.feature_extraction.text import CountVectorizer
+from scipy.optimize import fmin
 from scipy import sparse
 
+def blockPrint():
+    """ Disable printing
+    """
+    
+    sys.stdout = open(os.devnull, 'w')
+
+def enablePrint():
+    """ Enable printing
+    """
+    sys.stdout = sys.__stdout__
 
 def webpage_text_tokenizer(url, body=True, blackL=[""], verbose=False, sep=" ", **kwargs):
     """Request and parse the HTML of a given url. Returns a list of words.    
@@ -253,9 +264,13 @@ def stem_words(string, sep=" "):
     return sep.join(string)
 
 
-class MarginalScreening(BaseEstimator):
-    """ The estimator implements marginal screening as posed by Kelly et al. 2019 article 'Predicting Returns with Text Data'. The procedure consist of fitting a linear regression for each element of a document word matrix.
-    The parameters are controls on the coefficients, upper and lower bound (alpha_plus, alpha_minus) and moreover on the frequency of the words.   
+class SSESTM(BaseEstimator):
+    """ The estimator implements the Supervised Sentiment Extraction via Screening and Topic Modelling (aka SSESTM procedure) as posed by Kelly et al. 2019 article 'Predicting Returns with Text Data'. The procedure consist of:
+    1. Marginal screening: fitting a linear regression for each element of a document word matrix;
+    2. Topic modelling: fitting a linear regression on the screened words frequencies passing ranked labels;
+    3. Prediction: by maximizing the log likelihood of a multinomial distribution with penalty.
+ 
+    The parameters are controls on the coefficients, upper and lower bound (alpha_plus, alpha_minus), on the frequency of the words and on the penalty applied in prediction.   
 
     Parameters
     ----------
@@ -265,105 +280,86 @@ class MarginalScreening(BaseEstimator):
         A parameter for trimming the coefficients upwards.
     kappa : float, default= 1
         Lower limit on words frequency.
+    l : float, default= 0
+        Maximum likelihood penalty term.
+
     """
-    def __init__(self, alpha_plus = 0.5, alpha_minus = 0.5, kappa = 1):
+    def __init__(self, alpha_plus = 0.5, alpha_minus = 0.5, kappa = 1, l = 0.0):
         self.alpha_plus = alpha_plus
         self.alpha_minus = alpha_minus
         self.kappa = kappa
-
-    def fit(self, X, y):
-        """Implementation of a fitting function.
+        self.l = l
+        
+    def fit(self, K, y):
+        """Implements the first two steps, namely:
+        1. Marginal Screening;
+        2. Topic Modelling
+.
         Parameters
         ----------
-        X : {array-like, sparse matrix}, shape (n_samples, n_features)
-            The training input samples.
-        y : array-like, shape (n_samples,) or (n_samples, n_outputs)
-            The target values (class labels in classification, real numbers in
-            regression).
+        K : pandas series 
+            A series containing the keywords.
+
+        y : pandas series
+            A series containing labels 
+
         Returns
         -------
         self : object
             Returns self.
         """
-        X, y = check_X_y(X, y, accept_sparse=True, y_numeric=True)
+
+        # MARGINAL SCREENING #
+        # Init the document term matrix
+        cvStep1 = CountVectorizer(binary=True)
+
+        X = cvStep1.fit_transform(K)
+
+        # Binarize the order to label whether an observation belongs to a client 1 or 0 a prospect
+        y = y.copy()
+        ybin = y
+        ybin[ybin>0] = 1
         
         wordfreq = sum(X)
         wordfreq = wordfreq.toarray()[0,:]
         
-        self.coef_ = np.array([])
+        coef = np.array([])
+
+        # Suppress print to avoid scipy returning "The exact solution is x=0"
+        blockPrint()
         
         # Loop for every column in the matrix
         for i in X.T:
-            coefficient = LinearRegression(fit_intercept=False).fit(i.T,y).coef_
-            self.coef_ = np.concatenate((self.coef_, coefficient))
-            
+            coefficient = LinearRegression(fit_intercept=False).fit(i.T,ybin).coef_
+            coef = np.concatenate((coef, coefficient))
+
+        # Enable again printing 
+        enablePrint()
+        
         # Filter the coefficients based on the parameters
-        self.coef_[(self.coef_ < self.alpha_plus) * (self.coef_ > self.alpha_minus)] = np.nan
-        self.coef_[wordfreq < self.kappa] = np.nan
+        coef[(coef < self.alpha_plus) * (coef > self.alpha_minus)] = np.nan
+        coef[wordfreq < self.kappa] = np.nan
+
+        self.marginal_screening = pd.DataFrame(({"term": cvStep1.get_feature_names(),
+                                                 "score": coef
+        })).dropna()
+
+
+        # TOPIC MODELLING #
+        # Create a column with only sentiment charged keywords
+        K = K.apply(drop_non_sentiment_words, sentiment_words=self.marginal_screening["term"].to_list())
+
+        # Remove entries without sentiment charged words
+        y = y[K != ""]
+        K = K[K != ""]
         
-        return self
-
-    def predict(self, X):
-        """ A reference implementation of a predicting function.
-        Parameters
-        ----------
-        X : {array-like, sparse matrix}, shape (n_samples, n_features)
-            The training input samples.
-        Returns
-        -------
-        y : ndarray, shape (n_samples,)
-            Returns an array of ones.
-        """
-        X = check_array(X, accept_sparse=True)
-        
-        yHat = np.array([])
-
-        for i in range(0, X.shape[0]):
-            # Mean voting
-            yHatElement = np.nan
-            yHatElement = np.nanmean(self.coef_[(X[i, :].toarray()[0] == 1) * (np.isfinite(self.coef_))])
-            yHat = np.concatenate((yHat,np.array([yHatElement])))
-        
-        return yHat
-
-
-class TopicModelling(BaseEstimator):
-    """ The estimator implements topic modelling as posed by Kelly et al. 2019 article 'Predicting Returns with Text Data'.
-    There are no parameters.   
-    Parameters
-    ----------
-    K : pandas series 
-            A series containing the keywords.
-    S : pandas series
-            A series containing sentiment charged words.
-    y : array-like, shape (n_samples,) or (n_samples, n_outputs)
-            The target values (class labels in classification, real numbers in
-            regression).
-    Returns
-    -------
-    self : object
-           Returns self.
-    """
-    def __init__(self, demo_param='demo'):
-        self.demo_param = demo_param
-
-    def fit(self, K, S, y):
-        """
-
-        """
         # Define p-hat as the normalized rank
         y = y.rank(pct=True)
 
         # Initialize weight matrix 
         W = np.matrix([y, 1-y]).T
 
-        # Create a column with only sentiment charged keywords
-        K = K.apply(drop_non_sentiment_words, sentiment_words=S.to_list())
-
-        # Remove entries without sentiment charged words
-        K = K[K != ""]
-
-        # Compute count of sentiment charged words for each webpage
+        # Compute count of sentiment charged words for each web-page
         s = K.apply(lambda row: len(row.split(" ")))
 
         # Create document keyword matrix
@@ -381,57 +377,58 @@ class TopicModelling(BaseEstimator):
 
         # Normalize result to l1
         normalize(O, norm='l1', axis=0, copy=False, return_norm=False)
-        
-        self.coef_ = O
-        
+
+        self.topic_coefficients = O
+
         return self
 
-class WebpageScorer(BaseEstimator):
-    """ The estimator implements scoring as posed by Kelly et al. 2019 article 'Predicting Returns with Text Data'.  
-    Parameters
-    ----------
-    K : pandas series 
-            A series containing the keywords.
-    S : pandas series
-            A series containing sentiment charged words.
-    O : array-like
-            Matrix containing word positiveness or negativeness.
-    Returns
-    -------
-    self : object
-           Returns self.
-    """
-    def __init__(self, l=0.5):
-        self.l = l
 
-    def predict(self, K, S, O):
+    def predict(self, K):
         """
 
         """
-        
+        def mle(x, s, dS, O):
+            """ The function implements the log-likelihood of a multinomial with penalty as posed by Kelly et al.
+
+            Parameters
+            ----------
+            x : float
+                The sentiment score.
+            s : int
+                The number of sentiment charged words per web-page.
+            dS : pandas series
+                A series containing sentiment charged words frequencies.
+            O : array-like
+                Matrix containing word positiveness or negativeness.
+                
+            Returns
+            -------
+            v : float
+                Return the log-likelihood value given x.
+
+            """
+            return -((float(s)**(-1)) *
+                     np.sum(np.multiply(dS.toarray().T,(np.log(x*O[:,0] + (1-x)*O[:,1]))[:,None]) + self.l*np.log(x*(1-x))))
+
         # Create a column with only sentiment charged keywords
-        K = K.apply(drop_non_sentiment_words, sentiment_words=S.to_list())
+        K = K.apply(drop_non_sentiment_words, sentiment_words=self.marginal_screening["term"].to_list())
 
-        # Remove entries without sentiment charged words
-        K = K[K != ""]
-
-        # Compute count of sentiment charged words for the webpage
+        # Compute count of sentiment charged words for the web-page
         s = K.apply(lambda row: len(row.split(" ")))
 
         # Create document keyword matrix
-        cvStep3 = CountVectorizer(vocabulary=S)
+        cvStep3 = CountVectorizer(vocabulary=self.marginal_screening["term"].to_list())
         dS = cvStep3.fit_transform(K)
 
         # Get sentiment word frequency per document         
         D = dS/s[:,None]
 
-        
-        # Evaluate the log-likelihood
-        p = 0.5
-        #v = (dS[None,:]*np.log(p*O[:,0] + (1-p)*O[:,1])) + self.l*np.log(p*(1-p))
-        # Problem dS has to be converted into a simple array to do the piecewise operation
-        
-        self.p = dS
+        p = []
+        for i in range(len(s)):
+            p.append(fmin(mle, x0 = 0.01, args = (s.iloc[i], dS[i,:],self.topic_coefficients)))
+
+        # Maximize the log-likelihood
+        self.p = np.array(p)
         
         return self.p
 
