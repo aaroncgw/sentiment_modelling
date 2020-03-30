@@ -290,14 +290,14 @@ class SSESTM(BaseEstimator):
         self.kappa = kappa
         self.l = l
         
-    def fit(self, K, y):
+    def fit(self, X, y):
         """Implements the first two steps, namely:
         1. Marginal Screening;
         2. Topic Modelling
 .
         Parameters
         ----------
-        K : pandas series 
+        X : pandas series 
             A series containing the keywords.
 
         y : pandas series
@@ -313,14 +313,14 @@ class SSESTM(BaseEstimator):
         # Init the document term matrix
         cvStep1 = CountVectorizer(binary=True)
 
-        X = cvStep1.fit_transform(K)
+        cvX = cvStep1.fit_transform(X)
 
         # Binarize the order to label whether an observation belongs to a client 1 or 0 a prospect
         y = y.copy()
         ybin = y
         ybin[ybin>0] = 1
         
-        wordfreq = sum(X)
+        wordfreq = sum(cvX)
         wordfreq = wordfreq.toarray()[0,:]
         
         coef = np.array([])
@@ -329,7 +329,7 @@ class SSESTM(BaseEstimator):
         blockPrint()
         
         # Loop for every column in the matrix
-        for i in X.T:
+        for i in cvX.T:
             coefficient = LinearRegression(fit_intercept=False).fit(i.T,ybin).coef_
             coef = np.concatenate((coef, coefficient))
 
@@ -347,11 +347,11 @@ class SSESTM(BaseEstimator):
 
         # TOPIC MODELLING #
         # Create a column with only sentiment charged keywords
-        K = K.apply(drop_non_sentiment_words, sentiment_words=self.marginal_screening["term"].to_list())
+        X = X.apply(drop_non_sentiment_words, sentiment_words=self.marginal_screening["term"].to_list())
 
         # Remove entries without sentiment charged words
-        y = y[K != ""]
-        K = K[K != ""]
+        y = y[X != ""]
+        X = X[X != ""]
         
         # Define p-hat as the normalized rank
         y = y.rank(pct=True)
@@ -360,11 +360,11 @@ class SSESTM(BaseEstimator):
         W = np.matrix([y, 1-y]).T
 
         # Compute count of sentiment charged words for each web-page
-        s = K.apply(lambda row: len(row.split(" ")))
+        s = X.apply(lambda row: len(row.split(" ")))
 
         # Create document keyword matrix
         cvStep2 = CountVectorizer()
-        dS = cvStep2.fit_transform(K)
+        dS = cvStep2.fit_transform(X)
 
         # Get sentiment word frequency per document         
         tildeD = dS/s[:,None]
@@ -383,8 +383,19 @@ class SSESTM(BaseEstimator):
         return self
 
 
-    def predict(self, K):
-        """
+    def predict(self, X):
+        """The function implements scoring on new set of keywords as posed by Kelly et al.
+
+            Parameters
+            ----------
+            X : pandas series
+                A series containing the keywords.
+
+            Returns
+            -------
+            y : array
+                An array of sentiments.
+
 
         """
         def mle(x, s, dS, O):
@@ -411,24 +422,24 @@ class SSESTM(BaseEstimator):
                      np.sum(np.multiply(dS.toarray().T,(np.log(x*O[:,0] + (1-x)*O[:,1]))[:,None]) + self.l*np.log(x*(1-x))))
 
         # Create a column with only sentiment charged keywords
-        K = K.apply(drop_non_sentiment_words, sentiment_words=self.marginal_screening["term"].to_list())
+        X = X.apply(drop_non_sentiment_words, sentiment_words=self.marginal_screening["term"].to_list())
 
         # Compute count of sentiment charged words for the web-page
-        s = K.apply(lambda row: len(row.split(" ")))
+        s = X.apply(lambda row: len(row.split(" ")))
 
         # Create document keyword matrix
         cvStep3 = CountVectorizer(vocabulary=self.marginal_screening["term"].to_list())
-        dS = cvStep3.fit_transform(K)
+        dS = cvStep3.fit_transform(X)
 
         # Get sentiment word frequency per document         
         D = dS/s[:,None]
 
         p = []
         for i in range(len(s)):
-            p.append(fmin(mle, x0 = 0.01, args = (s.iloc[i], dS[i,:],self.topic_coefficients)))
+            p.append(fmin(mle, x0 = 0.5, args = (s.iloc[i], dS[i,:], self.topic_coefficients)))
 
         # Maximize the log-likelihood
-        self.p = np.array(p)
+        self.y = np.array(p)
         
-        return self.p
+        return self.y
 
