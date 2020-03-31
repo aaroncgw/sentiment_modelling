@@ -19,7 +19,7 @@ from sklearn.utils.multiclass import unique_labels
 from sklearn.metrics import euclidean_distances
 from sklearn.linear_model import LinearRegression
 from sklearn.feature_extraction.text import CountVectorizer
-from scipy.optimize import fmin
+from scipy.optimize import fminbound
 from scipy import sparse
 
 def blockPrint():
@@ -358,19 +358,19 @@ class SSESTM(BaseEstimator):
 
         # Initialize weight matrix 
         W = np.matrix([y, 1-y]).T
-
+        
         # Compute count of sentiment charged words for each web-page
         s = X.apply(lambda row: len(row.split(" ")))
-
+        
         # Create document keyword matrix
-        cvStep2 = CountVectorizer()
+        cvStep2 = CountVectorizer(vocabulary=self.marginal_screening["term"].to_list())
         dS = cvStep2.fit_transform(X)
 
         # Get sentiment word frequency per document         
         tildeD = dS/s[:,None]
 
         # Fit the linear regression to estimate O matrix
-        O = LinearRegression(fit_intercept=True).fit(X = W, y = tildeD).coef_
+        O = LinearRegression(fit_intercept=False).fit(X = W, y = tildeD).coef_
 
         # Set negative coefficients to 0
         O[O <= 0] = 0
@@ -419,14 +419,14 @@ class SSESTM(BaseEstimator):
 
             """
             return -((float(s)**(-1)) *
-                     np.sum(np.multiply(dS.toarray().T,(np.log(x*O[:,0] + (1-x)*O[:,1]))[:,None]) + self.l*np.log(x*(1-x))))
+                     np.sum(np.multiply(dS.toarray().T,(np.log(0.00000001 + x*O[:,0] + (1-x)*O[:,1]))[:,None]) + self.l*np.log(x*(1-x))))
 
         # Create a column with only sentiment charged keywords
         X = X.apply(drop_non_sentiment_words, sentiment_words=self.marginal_screening["term"].to_list())
 
         # Compute count of sentiment charged words for the web-page
         s = X.apply(lambda row: len(row.split(" ")))
-
+        
         # Create document keyword matrix
         cvStep3 = CountVectorizer(vocabulary=self.marginal_screening["term"].to_list())
         dS = cvStep3.fit_transform(X)
@@ -436,8 +436,15 @@ class SSESTM(BaseEstimator):
 
         p = []
         for i in range(len(s)):
-            p.append(fmin(mle, x0 = 0.5, args = (s.iloc[i], dS[i,:], self.topic_coefficients)))
-
+            p.append(fminbound(mle,
+                               x1 = 0.001,
+                               x2 = 0.999,
+                               args = (s.iloc[i],
+                                       dS[i,:],
+                                       self.topic_coefficients)))
+            #return (0.01*self.topic_coefficients[:,0] + (1-0.01)*self.topic_coefficients[:,1])
+            # return mle(0.01,s.iloc[i], dS[i,:], self.topic_coefficients)
+        
         # Maximize the log-likelihood
         self.y = np.array(p)
         
