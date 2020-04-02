@@ -9,6 +9,7 @@ import numpy as np
 import plotly.express as px
 import pandas as pd
 import nltk.stem as stem
+from io import StringIO
 from sklearn.preprocessing import normalize
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from bs4 import BeautifulSoup
@@ -22,17 +23,15 @@ from sklearn.feature_extraction.text import CountVectorizer
 from scipy.optimize import fminbound
 from scipy import sparse
 
-def blockPrint():
-    """ Disable printing
-    """
-    
-    sys.stdout = open(os.devnull, 'w')
+class HiddenPrints:
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        sys.stdout = open(os.devnull, 'w')
 
-def enablePrint():
-    """ Enable printing
-    """
-    sys.stdout = sys.__stdout__
-
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stdout = self._original_stdout
+        
 def webpage_text_tokenizer(url, body=True, blackL=[""], verbose=False, sep=" ", **kwargs):
     """Request and parse the HTML of a given url. Returns a list of words.    
     Parameters
@@ -134,7 +133,6 @@ def webpage_text_tokenizer(url, body=True, blackL=[""], verbose=False, sep=" ", 
         if verbose:
             print("Internalerror")
         return ""
-
 
 def urlize_string(url, warning=True, verbose = False, **kwargs):
     """Normalize the url provided and test whether it can be reached with requests. Returns a string with the corrected url.
@@ -326,15 +324,13 @@ class SSESTM(BaseEstimator):
         coef = np.array([])
 
         # Suppress print to avoid scipy returning "The exact solution is x=0"
-        blockPrint()
-        
-        # Loop for every column in the matrix
-        for i in cvX.T:
-            coefficient = LinearRegression(fit_intercept=False).fit(i.T,ybin).coef_
-            coef = np.concatenate((coef, coefficient))
+        with HiddenPrints():
 
-        # Enable again printing 
-        enablePrint()
+            # Loop for every column in the matrix
+            for i in cvX.T:
+                coefficient = LinearRegression(fit_intercept=False).fit(i.T,ybin).coef_
+                coef = np.concatenate((coef, coefficient))
+
         
         # Filter the coefficients based on the parameters
         coef[(coef < self.alpha_plus) * (coef > self.alpha_minus)] = np.nan
@@ -450,3 +446,57 @@ class SSESTM(BaseEstimator):
         
         return self.y
 
+    
+class testData():
+    """ The class contains (at the time) one dataset, namely Dantes's Divine Comedy gently offered by druntime repository.  
+    """
+
+    def dante(path = ""):
+        """The function returns a pandas containing Dante's Divine Comedy.
+.
+        Parameters
+        ----------
+        none
+
+        Returns
+        -------
+        dante : pandas DataFrame
+            Returns dataframe containing Dante's Divine Comedy.
+        """
+
+        if path == "":
+            # Get the repository containing the relevant text
+            url = "https://raw.githubusercontent.com/dlang/druntime/master/benchmark/extra-files/dante.txt"
+
+            # Request the raw .txt and decode it
+            response = requests.get(url)
+            dante = response.text
+        else:
+            f = open(path)
+            dante = f.read()
+
+        # String processing starts here
+        # Make string lowercase
+        dante = dante.lower()
+
+        # Remove headings
+        dante = dante.replace("la divina commedia\ndi dante alighieri\n\n\n\n\n\ninferno\n\n\n\n\n", "")
+        dante = dante.replace("\n\n\n\n\n\npurgatorio\n", "")
+        dante = dante.replace("\n\n\n\n\n\nparadiso\n", "")
+
+        # Punctation and other amenities removal
+        dante = dante.translate(str.maketrans({i: "" for i in string.punctuation + "”" + "“" + "»" + "«" + "‘"}))
+        dante = dante.translate(str.maketrans({i: " " for i in "’" + "—"}))
+
+        # Make string  csv-like
+        dante = dante.replace("\n\n\n",",").replace(",\n",";").replace("\n\n", " ").replace("\n", " ").replace(";", "\n").replace(" · ",",")
+
+        # Create the dataframe
+        dante = pd.read_csv(StringIO(dante), header=None, names=["label", "canto", "content"], index_col=[0,1])
+
+        # Remove italian stopwords
+        dante.loc[:,"content"] = dante.loc[:,"content"].apply(lambda x: " ".join([w for w in nltk.word_tokenize(x) if not w in stopwords.words('italian') if len(w) > 2]))
+
+        return dante
+
+        
