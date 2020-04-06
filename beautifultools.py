@@ -7,8 +7,11 @@ import statistics, re, string, sys, os
 import nltk, requests 
 import numpy as np
 import plotly.express as px
+import matplotlib.pyplot as plt
 import pandas as pd
 import nltk.stem as stem
+from wordcloud import WordCloud, ImageColorGenerator
+from PIL import Image
 from io import StringIO
 from sklearn.preprocessing import normalize
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -193,6 +196,44 @@ def urlize_string(url, warning=True, verbose = False, **kwargs):
                 if verbose:
                     print("Invalid schema error with: ",newUrl)
                     
+
+def word_cloud(corpora, maskPath, **kwargs):
+    """Plot a wordcloud provided text and a mask in rasterized formats.
+    
+    
+    Parameters
+    ----------
+    corpora : a list containing strings with space as stop word
+    maskPath : path to a raster image.
+    """
+
+    mask = np.array(Image.open(maskPath))
+
+    # create coloring from image
+    imageColors = ImageColorGenerator(mask)
+    fig, axs = plt.subplots(1,len(corpora), **kwargs)
+
+    for i in range(len(corpora)):
+
+        wc = WordCloud(background_color="white",
+                       mask=mask,
+                       random_state=1994,
+                       repeat=False,
+                       collocations=False)
+
+        # Generate word cloud from text
+        wc.generate(corpora[i])
+ 
+        # Overlap image and word-cloud and remove axes 
+        axs[i].imshow(wc.recolor(color_func=imageColors), interpolation='bilinear')
+        axs[i].imshow(mask, cmap=plt.cm.gray, interpolation="bilinear", alpha = 0.3)
+
+        axs[i].set_axis_off()
+
+    return plt.show()
+
+    
+
                     
 def plot_word_frequencies(corpus, **kwargs):
     """Plot the histogram of the words contained into a corpus.
