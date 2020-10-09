@@ -544,6 +544,7 @@ class SSESTM(BaseEstimator):
         y = y.copy()
         ybin = y
         ybin[ybin > 0] = 1
+        ybin[ybin <= 0] = 0
 
         wordfreq = sum(cvX)
         wordfreq = wordfreq.toarray()[0, :]
